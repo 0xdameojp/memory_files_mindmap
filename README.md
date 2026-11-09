@@ -39,7 +39,7 @@ Google OAuth でログインし、Google Drive のフォルダを再帰的に走
 - **HEIC の扱い**。`heic-convert`（libheif の JS 版）は Workers の CPU・メモリ制限に収まらないため外しました。
   旧版で最初に試していた「Drive が作る JPEG サムネイル（1600px）を返す」処理だけ残しています。
   サムネイルがまだ作られていない HEIC は表示されません。
-- **PM2 / デプロイ用スクリプトは削除**。`wrangler deploy` で置き換えます。
+- **PM2 / デプロイ用スクリプトは削除**。Workers Builds（リポジトリ連携）でデプロイします。
 - `robots.ts` → `public/robots.txt`、`<meta name="robots">`、全レスポンスに `X-Robots-Tag`。
 
 ## ローカル開発
@@ -66,19 +66,29 @@ http://localhost:5173/api/auth/google/callback
 | `APP_BASE_URL` | var（任意） | 例 `https://mindmap.example.com`。未設定ならリクエストの URL から決める |
 | `GOOGLE_REDIRECT_URI` | var（任意） | 未設定なら `${APP_BASE_URL}/api/auth/google/callback` |
 
-## デプロイ
+## デプロイ（Workers Builds：リポジトリ連携）
 
-```bash
-npx wrangler login
-npx wrangler secret put APP_SESSION_SECRET
-npx wrangler secret put GOOGLE_CLIENT_ID
-npx wrangler secret put GOOGLE_CLIENT_SECRET
-npm run deploy
-```
+Cloudflare ダッシュボードの **Workers & Pages → Create → Import a repository** でこのリポジトリをつなぎます。
 
-デプロイ後、`https://<worker名>.<アカウント>.workers.dev/api/auth/google/callback`
+| 項目 | 値 |
+| --- | --- |
+| Worker 名 | `memories-map-google-drive`（`wrangler.jsonc` の `name` と一致させる） |
+| Build command | `npm run build` |
+| Deploy command | `npx wrangler deploy`（既定値のまま） |
+| Root directory | `/` |
+
+`npm run build` で Vite が `dist/` に Worker と静的アセットを出力し、
+`wrangler deploy` はその出力を自動で使います。
+
+環境変数は、ビルド用の変数ではなく、Worker の
+**Settings → Variables and Secrets** に設定します。
+`APP_SESSION_SECRET` / `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` は Secret（暗号化）にしてください。
+`wrangler.jsonc` には `keep_vars: true` を入れてあるので、ダッシュボードで設定した値はデプロイで消えません。
+
+初回のデプロイ後、`https://memories-map-google-drive.<アカウント>.workers.dev/api/auth/google/callback`
 （独自ドメインならそちらの URL）を Google Cloud Console のリダイレクト URI に追加してください。
-独自ドメインを使う場合は `wrangler.jsonc` に `routes` か `vars.APP_BASE_URL` を設定します。
+
+手元から直接デプロイする場合は `npx wrangler login` してから `npm run deploy` を実行します。
 
 ## その他
 
