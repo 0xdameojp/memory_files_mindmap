@@ -1,0 +1,15 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "memories-map-google-drive",
+  "main": "src/worker/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "assets": {
+    // 静的アセットに一致しないパスは index.html を返す (SPA)
+    "not_found_handling": "single-page-application",
+    // /api/* は必ず Worker で処理する
+    "run_worker_first": ["/api/*"]
+  }
+  // 公開値は vars に、秘密値は `wrangler secret put` で設定する
+  // "vars": { "APP_BASE_URL": "https://your-domain.example.com" }
+}

@@ -1,0 +1,19 @@
+# dependencies
+/node_modules
+
+# build
+/dist
+
+# wrangler / cloudflare
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+worker-configuration.d.ts
+
+# misc
+.DS_Store
+*.pem
+*.tsbuildinfo
+npm-debug.log*
+.env*
