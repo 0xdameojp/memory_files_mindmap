@@ -16,10 +16,23 @@ import {
   getAppBaseUrl,
   getDriveImageTree,
   getFreshTokens,
+  isHeicMimeType,
+  isSafeImageMimeType,
+  revokeToken,
 } from "./google-drive";
 import { sealJson, unsealJson } from "./session";
 
 const NO_INDEX = "noindex, nofollow, noimageindex, noarchive";
+
+// API レスポンス共通のセキュリティヘッダー (静的アセットは public/_headers で設定)
+const API_SECURITY_HEADERS: Record<string, string> = {
+  "X-Robots-Tag": NO_INDEX,
+  "X-Content-Type-Options": "nosniff",
+  "X-Frame-Options": "DENY",
+  "Referrer-Policy": "no-referrer",
+  "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; sandbox",
+  "Cross-Origin-Resource-Policy": "same-origin",
+};
 
 function json(data: unknown, init: ResponseInit = {}) {
   const headers = new Headers(init.headers);
@@ -41,16 +54,37 @@ function errorMessage(caughtError: unknown, fallback: string) {
 }
 
 async function readSession(request: Request, env: Env) {
-  return unsealJson<SessionTokens>(getCookie(request, SESSION_COOKIE), env.APP_SESSION_SECRET);
+  return unsealJson<SessionTokens>(
+    SESSION_COOKIE,
+    getCookie(request, SESSION_COOKIE),
+    env.APP_SESSION_SECRET,
+  );
 }
 
 async function sessionCookie(request: Request, env: Env, tokens: SessionTokens) {
   return serializeCookie(
     request,
     SESSION_COOKIE,
-    await sealJson(tokens, env.APP_SESSION_SECRET),
+    await sealJson(SESSION_COOKIE, tokens, SESSION_MAX_AGE, env.APP_SESSION_SECRET),
     SESSION_MAX_AGE,
   );
+}
+
+/** 状態を変える POST は同一オリジンからのみ受け付ける (CSRF 対策) */
+function isSameOriginRequest(request: Request) {
+  const origin = request.headers.get("Origin");
+  const fetchSite = request.headers.get("Sec-Fetch-Site");
+
+  if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+    return false;
+  }
+
+  if (origin) {
+    return origin === new URL(request.url).origin;
+  }
+
+  // Origin も Sec-Fetch-Site も無い古いクライアントは拒否
+  return fetchSite !== null;
 }
 
 function normalizeFolderId(input: string) {
@@ -92,7 +126,7 @@ async function handleLogin(request: Request, env: Env) {
   const stateCookie = serializeCookie(
     request,
     OAUTH_STATE_COOKIE,
-    await sealJson({ state }, env.APP_SESSION_SECRET),
+    await sealJson(OAUTH_STATE_COOKIE, { state }, OAUTH_STATE_MAX_AGE, env.APP_SESSION_SECRET),
     OAUTH_STATE_MAX_AGE,
   );
 
@@ -106,6 +140,7 @@ async function handleCallback(request: Request, env: Env) {
   const returnedState = url.searchParams.get("state");
   const error = url.searchParams.get("error");
   const savedState = await unsealJson<{ state: string }>(
+    OAUTH_STATE_COOKIE,
     getCookie(request, OAUTH_STATE_COOKIE),
     env.APP_SESSION_SECRET,
   );
@@ -137,7 +172,18 @@ async function handleCallback(request: Request, env: Env) {
   }
 }
 
-function handleLogout(request: Request) {
+async function handleLogout(request: Request, env: Env) {
+  if (!isSameOriginRequest(request)) {
+    return json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  const session = await readSession(request, env);
+
+  if (session) {
+    // Cookie を消すだけでなく、Google 側でもトークンを失効させる
+    await revokeToken(session.refreshToken);
+  }
+
   return json(
     { ok: true },
     { headers: { "Set-Cookie": deleteCookie(request, SESSION_COOKIE) } },
@@ -172,12 +218,6 @@ async function handleTree(request: Request, env: Env) {
   }
 }
 
-function isHeicLikeFile(name: string, mimeType: string) {
-  return (
-    mimeType.includes("heic") || mimeType.includes("heif") || /\.(heic|heif)$/i.test(name)
-  );
-}
-
 function toJpegFilename(name: string) {
   return name.replace(/\.(heic|heif)$/i, ".jpg");
 }
@@ -196,6 +236,12 @@ async function handleFile(request: Request, env: Env, fileId: string) {
   try {
     const { tokens, refreshed } = await getFreshTokens(env, session);
     const { metadata, fetchMedia } = await downloadDriveFile(tokens.accessToken, fileId);
+
+    // 画像以外 (HTML・SVG など) は返さない。同一オリジンでスクリプトが動くのを防ぐ
+    if (!isSafeImageMimeType(metadata.mimeType)) {
+      return new Response("Unsupported file type.", { status: 403 });
+    }
+
     const headers = new Headers();
 
     if (refreshed) {
@@ -205,7 +251,7 @@ async function handleFile(request: Request, env: Env, fileId: string) {
     let body: ReadableStream | null;
     let outputMimeType = metadata.mimeType;
     let outputName = metadata.name;
-    const isHeic = isHeicLikeFile(metadata.name, metadata.mimeType);
+    const isHeic = isHeicMimeType(metadata.mimeType);
 
     if (isHeic) {
       // Workers 上では heic-convert (libheif の JS 版) が CPU/メモリ制限に収まらないため、
@@ -223,7 +269,8 @@ async function handleFile(request: Request, env: Env, fileId: string) {
       }
 
       body = thumbnailResponse.body;
-      outputMimeType = thumbnailResponse.headers.get("content-type") ?? "image/jpeg";
+      const thumbnailType = thumbnailResponse.headers.get("content-type")?.split(";")[0].trim();
+      outputMimeType = isSafeImageMimeType(thumbnailType) ? thumbnailType! : "image/jpeg";
       outputName = toJpegFilename(metadata.name);
     } else {
       const mediaResponse = await fetchMedia();
@@ -271,7 +318,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       return handleCallback(request, env);
     }
     if (method === "POST" && pathname === "/api/auth/google/logout") {
-      return handleLogout(request);
+      return handleLogout(request, env);
     }
     if (method === "GET" && pathname === "/api/drive/tree") {
       return handleTree(request, env);
@@ -291,9 +338,15 @@ async function route(request: Request, env: Env): Promise<Response> {
 export default {
   async fetch(request, env) {
     const response = await route(request, env);
-    // 元の robots 設定と同じく、全レスポンスを検索エンジンから除外
+
+    if (!new URL(request.url).pathname.startsWith("/api/")) {
+      return response;
+    }
+
     const withHeaders = new Response(response.body, response);
-    withHeaders.headers.set("X-Robots-Tag", NO_INDEX);
+    for (const [name, value] of Object.entries(API_SECURITY_HEADERS)) {
+      withHeaders.headers.set(name, value);
+    }
     return withHeaders;
   },
 } satisfies ExportedHandler<Env>;

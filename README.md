@@ -31,8 +31,8 @@ Google OAuth でログインし、Google Drive のフォルダを再帰的に走
 ## Next.js 版からの主な変更点
 
 - **Next.js → Vite + React SPA + Worker**。`next/image` は `<img>` に置き換えました。
-- **`node:crypto` → Web Crypto API**。Cookie の形式・署名は旧版と同じなので、
-  `APP_SESSION_SECRET` が同じなら旧版のセッション Cookie もそのまま使えます。
+- **`node:crypto` → Web Crypto API**。Cookie は署名だけでなく暗号化するようにしたため、
+  旧版のセッション Cookie は使えません（一度ログインし直しになります）。
 - **Drive の走査をまとめて取得する方式に変更**。旧版はフォルダ 1 つごとに API を 2 回呼んでいましたが、
   Workers には 1 リクエストあたりのサブリクエスト数に上限（Free プランでは 50）があります。
   そこで `'a' in parents or 'b' in parents ...` で最大 30 フォルダずつまとめて、階層ごとに取得するようにしました。
@@ -60,7 +60,7 @@ http://localhost:5173/api/auth/google/callback
 
 | 名前 | 種類 | 説明 |
 | --- | --- | --- |
-| `APP_SESSION_SECRET` | secret | Cookie 署名用の長いランダム文字列 |
+| `APP_SESSION_SECRET` | secret | Cookie 暗号化用のランダム文字列（**32 文字以上**。例: `openssl rand -base64 48`） |
 | `GOOGLE_CLIENT_ID` | secret | OAuth クライアント ID |
 | `GOOGLE_CLIENT_SECRET` | secret | OAuth クライアントシークレット |
 | `APP_BASE_URL` | var（任意） | 例 `https://mindmap.example.com`。未設定ならリクエストの URL から決める |
@@ -89,6 +89,18 @@ Cloudflare ダッシュボードの **Workers & Pages → Create → Import a re
 （独自ドメインならそちらの URL）を Google Cloud Console のリダイレクト URI に追加してください。
 
 手元から直接デプロイする場合は `npx wrangler login` してから `npm run deploy` を実行します。
+
+## セキュリティ
+
+- **画像だけを返す**: `/api/drive/file/:id` は JPEG・PNG・GIF・WebP・AVIF・BMP・HEIC のみ返し、
+  HTML・SVG などは 403 にします。共有された悪意あるファイルを、アプリのドメイン上で実行させないためです。
+  さらに `nosniff` と `Content-Security-Policy: sandbox` を付けています。
+- **Cookie**: AES-256-GCM で暗号化し、`HttpOnly` / `Secure` / `SameSite=Lax` を付けています。
+  中身の Google トークンは読めず、30 日の期限はサーバー側でも確かめます。
+- **ログアウト**: Cookie を消すと同時に、Google 側でもトークンを失効させます。同じオリジンからの POST だけを受け付けます。
+- **ヘッダー**: 画面は `public/_headers` で CSP・`frame-ancestors 'none'`・`X-Frame-Options: DENY` などを設定しています。
+  API には Worker 側で同様のヘッダーを付けています。
+- `APP_SESSION_SECRET` を変えると、全員のセッションが無効になります。漏れた場合は変えてください。
 
 ## その他
 

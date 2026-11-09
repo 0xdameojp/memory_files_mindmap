@@ -1,5 +1,10 @@
-// Web Crypto (HMAC-SHA256) で署名した JSON を Cookie に載せる。
-// 元の Node.js 版 (node:crypto) と同じ `payload.signature` 形式・同じ署名結果。
+// Cookie に載せる値を AES-256-GCM で暗号化＋改ざん検知する。
+// 鍵は APP_SESSION_SECRET から HKDF-SHA256 で導出する。
+// 形式: `v1.<iv>.<ciphertext>` (いずれも base64url)
+// 中身には有効期限 (exp) を含め、Cookie の Max-Age とは別にサーバー側でも期限切れを判定する。
+
+const VERSION = "v1";
+const IV_LENGTH = 12;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -28,34 +33,62 @@ const keyCache = new Map<string, Promise<CryptoKey>>();
 function getKey(secret: string) {
   let key = keyCache.get(secret);
   if (!key) {
-    key = crypto.subtle.importKey(
-      "raw",
-      encoder.encode(secret),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign", "verify"],
-    );
+    key = (async () => {
+      const material = await crypto.subtle.importKey(
+        "raw",
+        encoder.encode(secret),
+        "HKDF",
+        false,
+        ["deriveKey"],
+      );
+      return crypto.subtle.deriveKey(
+        {
+          name: "HKDF",
+          hash: "SHA-256",
+          salt: encoder.encode("drive-mind-map"),
+          info: encoder.encode("cookie-encryption-v1"),
+        },
+        material,
+        { name: "AES-GCM", length: 256 },
+        false,
+        ["encrypt", "decrypt"],
+      );
+    })();
     keyCache.set(secret, key);
   }
   return key;
 }
 
 function requireSecret(secret: string | undefined) {
-  if (!secret) {
-    throw new Error("APP_SESSION_SECRET is not set.");
+  if (!secret || secret.length < 32) {
+    throw new Error("APP_SESSION_SECRET must be set to a random string of at least 32 characters.");
   }
   return secret;
 }
 
-export async function sealJson<T>(value: T, secret: string | undefined) {
-  const payload = bytesToBase64Url(encoder.encode(JSON.stringify(value)));
-  const key = await getKey(requireSecret(secret));
-  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(payload));
+type Envelope<T> = { v: T; exp: number };
 
-  return `${payload}.${bytesToBase64Url(new Uint8Array(signature))}`;
+/** 値を暗号化する。`name` は Cookie 名で、別の Cookie への差し替えを防ぐ追加認証データに使う */
+export async function sealJson<T>(
+  name: string,
+  value: T,
+  maxAgeSeconds: number,
+  secret: string | undefined,
+) {
+  const key = await getKey(requireSecret(secret));
+  const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
+  const envelope: Envelope<T> = { v: value, exp: Date.now() + maxAgeSeconds * 1000 };
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv, additionalData: encoder.encode(name) },
+    key,
+    encoder.encode(JSON.stringify(envelope)),
+  );
+
+  return `${VERSION}.${bytesToBase64Url(iv)}.${bytesToBase64Url(new Uint8Array(ciphertext))}`;
 }
 
 export async function unsealJson<T>(
+  name: string,
   sealedValue: string | null | undefined,
   secret: string | undefined,
 ): Promise<T | null> {
@@ -63,27 +96,26 @@ export async function unsealJson<T>(
     return null;
   }
 
-  const [payload, signature] = sealedValue.split(".");
+  const [version, ivPart, dataPart] = sealedValue.split(".");
 
-  if (!payload || !signature) {
+  if (version !== VERSION || !ivPart || !dataPart) {
     return null;
   }
 
   try {
     const key = await getKey(requireSecret(secret));
-    // crypto.subtle.verify は定数時間比較
-    const valid = await crypto.subtle.verify(
-      "HMAC",
+    const plaintext = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: base64UrlToBytes(ivPart), additionalData: encoder.encode(name) },
       key,
-      base64UrlToBytes(signature),
-      encoder.encode(payload),
+      base64UrlToBytes(dataPart),
     );
+    const envelope = JSON.parse(decoder.decode(plaintext)) as Envelope<T>;
 
-    if (!valid) {
+    if (typeof envelope.exp !== "number" || envelope.exp < Date.now()) {
       return null;
     }
 
-    return JSON.parse(decoder.decode(base64UrlToBytes(payload))) as T;
+    return envelope.v;
   } catch {
     return null;
   }

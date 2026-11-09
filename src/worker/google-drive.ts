@@ -11,6 +11,32 @@ const GOOGLE_SCOPES = [
 const GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_DRIVE_API_URL = "https://www.googleapis.com/drive/v3/files";
+const GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke";
+
+// 表示してよい画像形式だけを許可する。
+// SVG はスクリプトを含められるため除外 (同一オリジンで開かれると XSS になる)。
+const SAFE_IMAGE_MIME_TYPES = new Set([
+  "image/jpeg",
+  "image/pjpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+  "image/avif",
+  "image/bmp",
+  "image/x-ms-bmp",
+  "image/heic",
+  "image/heif",
+  "image/heic-sequence",
+  "image/heif-sequence",
+]);
+
+export function isSafeImageMimeType(mimeType: string | null | undefined) {
+  return Boolean(mimeType && SAFE_IMAGE_MIME_TYPES.has(mimeType.toLowerCase()));
+}
+
+export function isHeicMimeType(mimeType: string) {
+  return /^image\/(heic|heif)/i.test(mimeType);
+}
 
 // Workers には 1 リクエストあたりのサブリクエスト数上限があるため、
 // 複数フォルダの中身を `'a' in parents or 'b' in parents ...` で 1 回にまとめて取得する。
@@ -190,6 +216,19 @@ export async function exchangeCodeForTokens(
   };
 }
 
+/** Google 側でトークンを失効させる (リフレッシュトークンを渡すと、紐づくアクセストークンも失効する) */
+export async function revokeToken(token: string) {
+  try {
+    await fetch(GOOGLE_REVOKE_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ token }),
+    });
+  } catch {
+    // 失効に失敗しても Cookie の削除は行う
+  }
+}
+
 /** 期限切れ間近ならリフレッシュしたトークンを返す */
 export async function getFreshTokens(
   env: Env,
@@ -219,7 +258,7 @@ function isFolder(file: DriveFile) {
 }
 
 function isImage(file: DriveFile) {
-  return Boolean(file.mimeType?.startsWith("image/"));
+  return isSafeImageMimeType(file.mimeType);
 }
 
 function createDriveFileUrl(fileId: string, fields?: string) {
