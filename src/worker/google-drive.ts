@@ -34,6 +34,28 @@ export function isSafeImageMimeType(mimeType: string | null | undefined) {
   return Boolean(mimeType && SAFE_IMAGE_MIME_TYPES.has(mimeType.toLowerCase()));
 }
 
+// Drive のファイル ID / フォルダ ID に使われる文字だけを許可する
+const DRIVE_ID_PATTERN = /^[A-Za-z0-9_-]{1,200}$/;
+
+export function isValidDriveId(id: string) {
+  return DRIVE_ID_PATTERN.test(id);
+}
+
+// アクセストークンを付けて取りに行ってよいサムネイルの配信元
+const TRUSTED_THUMBNAIL_HOST_SUFFIXES = [".googleusercontent.com", ".google.com"];
+
+export function isTrustedThumbnailUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "https:" &&
+      TRUSTED_THUMBNAIL_HOST_SUFFIXES.some((suffix) => url.hostname.endsWith(suffix))
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function isHeicMimeType(mimeType: string) {
   return /^image\/(heic|heif)/i.test(mimeType);
 }
@@ -262,6 +284,10 @@ function isImage(file: DriveFile) {
 }
 
 function createDriveFileUrl(fileId: string, fields?: string) {
+  if (fileId !== "root" && !isValidDriveId(fileId)) {
+    throw new Error("Invalid Google Drive ID.");
+  }
+
   const url = new URL(`${GOOGLE_DRIVE_API_URL}/${encodeURIComponent(fileId)}`);
   url.searchParams.set("supportsAllDrives", "true");
 

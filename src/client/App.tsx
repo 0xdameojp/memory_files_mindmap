@@ -2,11 +2,20 @@ import { useEffect, useState } from "react";
 
 import { DriveMindMap } from "./components/drive-mind-map";
 
+// URL の ?error= には決まったコードだけを受け付け、文言はここで決める。
+// 任意の文章を画面に出せると、なりすましの案内文を表示させられてしまうため。
+const AUTH_ERROR_MESSAGES: Record<string, string> = {
+  oauth_denied: "Google でのログインがキャンセルされたか、許可されませんでした。",
+  oauth_state: "ログインの確認に失敗しました。もう一度お試しください。",
+  oauth_failed: "Google でのログインを完了できませんでした。もう一度お試しください。",
+};
+
 function readInitialError() {
   const params = new URLSearchParams(window.location.search);
-  const error = params.get("error") ?? undefined;
+  const code = params.get("error");
+  const error = code ? (AUTH_ERROR_MESSAGES[code] ?? AUTH_ERROR_MESSAGES.oauth_failed) : undefined;
 
-  if (error) {
+  if (code) {
     // リロードでエラーが再表示されないよう URL から取り除く
     params.delete("error");
     const query = params.toString();

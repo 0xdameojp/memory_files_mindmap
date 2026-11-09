@@ -18,6 +18,8 @@ import {
   getFreshTokens,
   isHeicMimeType,
   isSafeImageMimeType,
+  isTrustedThumbnailUrl,
+  isValidDriveId,
   revokeToken,
 } from "./google-drive";
 import { sealJson, unsealJson } from "./session";
@@ -32,7 +34,11 @@ const API_SECURITY_HEADERS: Record<string, string> = {
   "Referrer-Policy": "no-referrer",
   "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; sandbox",
   "Cross-Origin-Resource-Policy": "same-origin",
+  "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
 };
+
+// 画面に渡すのはエラーの種類を表すコードだけ。文言はクライアント側で決まったものを出す
+type AuthErrorCode = "oauth_denied" | "oauth_state" | "oauth_failed";
 
 function json(data: unknown, init: ResponseInit = {}) {
   const headers = new Headers(init.headers);
@@ -99,17 +105,14 @@ function normalizeFolderId(input: string) {
       const url = new URL(trimmed);
       const folderMatch = url.pathname.match(/\/folders\/([^/?]+)/);
 
-      if (folderMatch?.[1]) {
-        return folderMatch[1];
-      }
-
-      return url.searchParams.get("id") ?? "";
+      const id = folderMatch?.[1] ?? url.searchParams.get("id") ?? "";
+      return isValidDriveId(id) ? id : "";
     } catch {
       return "";
     }
   }
 
-  return trimmed;
+  return trimmed === "root" || isValidDriveId(trimmed) ? trimmed : "";
 }
 
 // ---------------------------------------------------------------------------
@@ -145,17 +148,16 @@ async function handleCallback(request: Request, env: Env) {
     env.APP_SESSION_SECRET,
   );
   const clearState = deleteCookie(request, OAUTH_STATE_COOKIE);
-  const errorRedirect = (message: string) =>
-    redirect(new URL(`/?error=${encodeURIComponent(message)}`, appBaseUrl).toString(), [
-      clearState,
-    ]);
+  const errorRedirect = (code: AuthErrorCode) =>
+    redirect(new URL(`/?error=${code}`, appBaseUrl).toString(), [clearState]);
 
   if (error) {
-    return errorRedirect(`Google OAuth error: ${error}`);
+    console.warn("Google OAuth returned an error:", error);
+    return errorRedirect("oauth_denied");
   }
 
   if (!code || !returnedState || !savedState || returnedState !== savedState.state) {
-    return errorRedirect("OAuth state verification failed. Please try again.");
+    return errorRedirect("oauth_state");
   }
 
   try {
@@ -166,9 +168,8 @@ async function handleCallback(request: Request, env: Env) {
       await sessionCookie(request, env, tokens),
     ]);
   } catch (caughtError) {
-    return errorRedirect(
-      errorMessage(caughtError, "Google authentication could not be completed."),
-    );
+    console.error("Google token exchange failed:", errorMessage(caughtError, "unknown"));
+    return errorRedirect("oauth_failed");
   }
 }
 
@@ -201,7 +202,10 @@ async function handleTree(request: Request, env: Env) {
   const folderId = normalizeFolderId(url.searchParams.get("folderId") ?? "");
 
   if (!folderId) {
-    return json({ error: "folderId を指定してください。" }, { status: 400 });
+    return json(
+      { error: "Google Drive のフォルダ URL かフォルダ ID を正しく指定してください。" },
+      { status: 400 },
+    );
   }
 
   try {
@@ -256,7 +260,8 @@ async function handleFile(request: Request, env: Env, fileId: string) {
     if (isHeic) {
       // Workers 上では heic-convert (libheif の JS 版) が CPU/メモリ制限に収まらないため、
       // Google Drive が生成する JPEG サムネイル (1600px) を返す。
-      if (!metadata.thumbnailLink) {
+      // アクセストークンを付けるので、Google の配信元以外には送らない
+      if (!metadata.thumbnailLink || !isTrustedThumbnailUrl(metadata.thumbnailLink)) {
         return new Response("HEIC thumbnail is not available yet.", { status: 404 });
       }
 
@@ -326,7 +331,11 @@ async function route(request: Request, env: Env): Promise<Response> {
 
     const fileMatch = pathname.match(/^\/api\/drive\/file\/([^/]+)$/);
     if (method === "GET" && fileMatch) {
-      return handleFile(request, env, decodeURIComponent(fileMatch[1]));
+      // 正しい ID はデコード不要な文字だけなので、そのまま検証する
+      if (!isValidDriveId(fileMatch[1])) {
+        return new Response("Invalid file ID.", { status: 400 });
+      }
+      return handleFile(request, env, fileMatch[1]);
     }
 
     return json({ error: "Not Found" }, { status: 404 });

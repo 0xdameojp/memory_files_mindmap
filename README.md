@@ -100,7 +100,20 @@ Cloudflare ダッシュボードの **Workers & Pages → Create → Import a re
 - **ログアウト**: Cookie を消すと同時に、Google 側でもトークンを失効させます。同じオリジンからの POST だけを受け付けます。
 - **ヘッダー**: 画面は `public/_headers` で CSP・`frame-ancestors 'none'`・`X-Frame-Options: DENY` などを設定しています。
   API には Worker 側で同様のヘッダーを付けています。
+- **トークンの送り先を限定**: サムネイル取得でアクセストークンを付けるのは、`https` の `*.googleusercontent.com` / `*.google.com` だけです。
+- **ID の検証**: ファイル ID・フォルダ ID は英数字・`_`・`-` だけを受け付け、Drive API の別の場所に問い合わせが飛ばないようにしています。
+- **エラー表示**: URL の `?error=` には決まったコード（`oauth_denied` / `oauth_state` / `oauth_failed`）だけを受け付けます。
+  任意の文章を画面に出させて、なりすましの案内をされるのを防ぐためです。
+- **HSTS**: `Strict-Transport-Security` を付けています（独自ドメインは常に https で配信してください）。
 - `APP_SESSION_SECRET` を変えると、全員のセッションが無効になります。漏れた場合は変えてください。
+
+### 運用上の注意
+
+- `drive.readonly` は Google の「制限付きスコープ」です。一般公開するには Google の審査とセキュリティ評価が必要です。
+  身内だけで使う場合は、OAuth 同意画面を「テスト」のままにして、テストユーザーを登録してください（最大 100 人）。
+- Google アカウントがあれば誰でもログインできます（見えるのは本人の Drive だけ）。
+  利用者を絞りたい場合や利用量が気になる場合は、Cloudflare Access やレート制限を検討してください。
+- 画像はブラウザに 10 分間キャッシュされます。共用 PC ではログアウト後もしばらく残る可能性があります。
 
 ## その他
 
