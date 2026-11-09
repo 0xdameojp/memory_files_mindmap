@@ -72,7 +72,7 @@ Cloudflare ダッシュボードの **Workers & Pages → Create → Import a re
 
 | 項目 | 値 |
 | --- | --- |
-| Worker 名 | `memories-map-google-drive`（`wrangler.jsonc` の `name` と一致させる） |
+| Worker 名 | `memory-files-mindmap`（`wrangler.jsonc` の `name` と一致させる） |
 | Build command | `npm run build` |
 | Deploy command | `npx wrangler deploy`（既定値のまま） |
 | Root directory | `/` |
@@ -85,7 +85,7 @@ Cloudflare ダッシュボードの **Workers & Pages → Create → Import a re
 `APP_SESSION_SECRET` / `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` は Secret（暗号化）にしてください。
 `wrangler.jsonc` には `keep_vars: true` を入れてあるので、ダッシュボードで設定した値はデプロイで消えません。
 
-初回のデプロイ後、`https://memories-map-google-drive.<アカウント>.workers.dev/api/auth/google/callback`
+初回のデプロイ後、`https://memory-files-mindmap.<アカウント>.workers.dev/api/auth/google/callback`
 （独自ドメインならそちらの URL）を Google Cloud Console のリダイレクト URI に追加してください。
 
 手元から直接デプロイする場合は `npx wrangler login` してから `npm run deploy` を実行します。
